@@ -1,0 +1,291 @@
+using UnityEngine;
+using System.Collections;
+using System.Collections.Generic;
+
+
+public class BasicAI : MonoBehaviour {
+
+	public const float MAX_FORCE = 10f;
+
+	public const float MAX_AVOID_FORCE = 5f;
+
+	public const float DISTANCE_BEHIND_LEADER = 5f;
+
+	public const float MAX_SEPERATION = 3f;
+
+	public float pathWidth = 10f;
+	public Entity Leader;
+
+	//public Animator Anim;
+
+	private Entity self;
+	private float _mass;
+	private List<Entity> _targets;
+	private List<Entity> _obsticals;
+	private List<Entity>  _FleeTargets;
+	private List<Entity> _neighbors;
+	private float _wanderAngele;
+	private bool isMoving;
+	private int currentPathNode = 0;
+	private Path _path;
+
+
+	// Use this for initialization
+	void Start () {
+		_path = gameObject.GetComponent<Path> ();
+		self = gameObject.GetComponent<Entity> ();
+		_targets = new List<Entity>();
+		_FleeTargets = new List<Entity>();
+		_obsticals = new List<Entity> ();
+		_neighbors = new List<Entity> ();
+		_mass = 1f;
+		_wanderAngele = 0f;
+	}
+
+	void OnTriggerEnter(Collider other){
+		Entity temp = other.gameObject.GetComponent<Entity>();
+		if (temp == null)
+						return;
+		_obsticals.Add (temp);
+		_neighbors.Add (temp);
+		switch (self.type) {
+		case EntityTypes.Mob:
+			switch (temp.type){
+			case EntityTypes.Player:
+				_targets.Add (temp);
+				break;
+			case EntityTypes.Npc:
+				_FleeTargets.Add (temp);
+				break;
+			}
+			break;
+
+		case EntityTypes.Npc:
+			switch(temp.type){
+			case EntityTypes.Npc:
+				_FleeTargets.Add (temp);
+				break;
+			}
+			break;
+		}
+	}
+
+	void CalculaeVelocity(){
+		Vector3 disiredVelocity;
+		Vector3 steering;
+
+		disiredVelocity = Vector3.zero;
+		if (_targets != null) {
+						for (int i = 0; i < _targets.Count; i++) {
+								disiredVelocity += Pursuit (_targets [i]);
+						}
+				}
+		if (_FleeTargets != null) {
+						for (int i = 0; i < _FleeTargets.Count; i++) {
+								disiredVelocity += Flee (_FleeTargets [i]);
+						}
+				}
+		steering = Vector3.zero;
+		if (_targets.Count == 0 && _FleeTargets.Count == 0) {
+			if(Leader == null)
+						steering += PathFollowing ();
+			else
+				steering += LeaderFollowing();
+				}
+		steering += WanderFactor (disiredVelocity - self._Velocity);
+		steering += Avoidance (steering);
+		steering = Vector3.ClampMagnitude (steering,MAX_FORCE);
+		steering = steering / _mass;
+
+		self._Velocity = Vector3.ClampMagnitude( (self._Velocity + steering), self._maxVelocity);
+	}
+
+	Vector3 LeaderFollowing(){
+		if (Leader == null)
+						return Vector3.zero;
+		Vector3 tv = Leader._Velocity;
+		tv.Normalize();
+		tv *= DISTANCE_BEHIND_LEADER;
+
+		Vector3 ahead = Leader.transform.position + tv;
+
+		tv *= -1;
+
+		Vector3 behind = Leader.transform.position + tv;
+
+		Vector3 force = Arrival (behind) + seperation();
+		if (isOnLeaderSight(ahead)) {
+			force += evade(Leader);
+		}
+		return force;
+	}
+
+	Vector3 evade(Entity t) {
+		Vector3 distance = t.transform.position - transform.position;
+		float updatesAhead = distance.magnitude / MAX_FORCE;
+		Vector3 futurePosition = t.transform.position + t._Velocity * updatesAhead;
+		return Flee(futurePosition);
+	}
+
+	bool isOnLeaderSight(Vector3 leaderAhead) {
+		return distance(leaderAhead, transform.position) <= Leader.SightRange || distance(Leader.transform.position, transform.position) <= Leader.SightRange;
+	}
+
+	Vector3 seperation(){
+		Vector3 force = Vector3.zero;
+		for (int i =0; i < _neighbors.Count; i++) {
+			if(distance(_neighbors[i].transform.position,transform.position) >= self.SightRange)
+				_neighbors.RemoveAt (i);
+		}
+
+		if ( _neighbors.Count != 0) {
+			force.x /=  _neighbors.Count;
+			force.z /=  _neighbors.Count;
+			
+			force *= -1;
+		}
+
+		force.Normalize();
+		force *= MAX_SEPERATION;
+		return force;
+	}
+
+	Vector3 PathFollowing(){
+		Transform target = null;
+		int pathDir = 1;
+
+		if (_path != null && _path.Count > 0) {
+			target = _path.GetNode (currentPathNode);
+			if(distance (transform.position,target.position) <= pathWidth){
+				currentPathNode += pathDir;
+				if (currentPathNode >= _path.Count || currentPathNode < 0) {
+					pathDir *= -1;
+					currentPathNode += pathDir;
+				}
+			}
+		}
+		if (target == null)
+						return Vector3.zero;
+		return Seek (target.gameObject.GetComponent<Entity>());
+	}
+
+	Vector3 Avoidance(Vector3 velocity){
+		float dynamic_length = velocity.magnitude / MAX_FORCE;
+
+		Vector3 ahead = Vector3.ClampMagnitude ( transform.position + Vector3.Normalize (velocity),dynamic_length);
+		Vector3 ahead2 = Vector3.ClampMagnitude ( transform.position + Vector3.Normalize (velocity), self.SightRange * 0.5f);
+
+		Entity mostThreatening = findMostThreateningObstacle(ahead,ahead2);
+		Vector3 avoidance  = Vector3.zero;
+
+		if (mostThreatening != null) {
+			avoidance.x = ahead.x - mostThreatening.transform.position.x;
+			avoidance.y = ahead.z - mostThreatening.transform.position.z;
+			
+			avoidance = Vector3.ClampMagnitude (avoidance, MAX_AVOID_FORCE);
+		} else {
+			avoidance = Vector3.zero; // nullify the avoidance force
+		}
+		
+		return avoidance;
+
+	}
+
+	float distance(Vector3 a, Vector3 b) {
+		return Mathf.Sqrt((a.x - b.x) * (a.x - b.x) + (a.z - b.z) * (a.y - b.z));
+	}
+	
+	bool lineIntersectsCircle(Vector3 ahead , Vector3 ahead2,Entity obstacle) {
+		// the property "center" of the obstacle is a Vector3D.
+		// need to set up obstical class
+
+		return distance(obstacle.transform.position, ahead) <= obstacle.AdvoidanceRadius || distance(obstacle.transform.position, ahead2) <= obstacle.AdvoidanceRadius||distance (obstacle.transform.position,transform.position) <=obstacle.AdvoidanceRadius;
+	}
+
+	Entity findMostThreateningObstacle(Vector3 ahead , Vector3 ahead2) {
+		Entity mostThreatening = null;
+		
+		for (int i = 0; i < _obsticals.Count; i++) {
+			bool collision = lineIntersectsCircle(ahead, ahead2, _obsticals[i]);
+
+			// "position" is the character's current position
+			if (collision && (mostThreatening == null || distance(transform.position, _obsticals[i].transform.position) < distance(transform.position, mostThreatening.transform.position))) {
+				mostThreatening = _obsticals[i];
+			} else if(distance (_obsticals[i].transform.position,transform.position) > self.SightRange){_obsticals.Remove (_obsticals[i]);}
+		}
+		return mostThreatening;
+	}
+
+	Vector3 Flee(Vector3 t){
+		Vector3 distance = t - transform.position;
+		int TimeInterval =(int) (distance.magnitude / self._maxVelocity);
+		Vector3 fururePos = t * TimeInterval;
+		return fururePos;
+	}
+
+	Vector3 Flee(Entity t){
+		Vector3 distance = t.transform.position - transform.position;
+		if (distance.magnitude > self.SightRange) {
+			_FleeTargets.Remove (t);
+			return Vector3.zero;
+		}
+		int TimeInterval =(int) (distance.magnitude / self._maxVelocity);
+		Vector3 fururePos = t.transform.position + t._Velocity * TimeInterval;
+
+		fururePos += Vector3.Normalize (transform.position - t.transform.position) * self._maxVelocity;
+		return fururePos;
+	}
+
+	Vector3 Pursuit(Entity t){
+		Vector3 distance = t.transform.position - transform.position;
+		if (distance.magnitude > self.SightRange) {
+			_targets.Remove (t);
+			return Vector3.zero;
+		}
+		int TimeInterval =(int)( distance.magnitude / self._maxVelocity);
+		Vector3 fururePos = Seek (t) * TimeInterval;
+		return fururePos;
+		}
+
+	Vector3 Seek(Entity t){
+		Vector3	disiredVelocity = t.transform.position - transform.position;
+		return Arrival (disiredVelocity);
+	}
+
+	Vector3 Arrival(Vector3 disiredVelocity){
+		float distance = disiredVelocity.magnitude;
+		if (distance < self.SlowingRadius) {
+			disiredVelocity = Vector3.Normalize (disiredVelocity) * self._maxVelocity * (distance / self.SlowingRadius);
+		} else {
+			disiredVelocity = Vector3.Normalize (disiredVelocity) * self._maxVelocity;
+		}
+		return disiredVelocity;
+		}
+
+	Vector3 WanderFactor(Vector3 disiredVelocity){
+		Vector3 CircleCenter = disiredVelocity.normalized;
+		CircleCenter = CircleCenter * self._circleDistance;
+
+		Vector3 displacement = new Vector3 (0, 0, -1);
+		displacement *= self._circleRadius;
+		setAngle(displacement, _wanderAngele);
+		_wanderAngele += (float)(Random.Range (-5, 5) * self.AngleChange) - (self.AngleChange * .5f);
+
+		Vector3 rtn = CircleCenter + displacement;
+		return rtn;
+		}
+	
+	void setAngle(Vector3 d,float w){
+		float l = d.magnitude;
+		d.x = Mathf.Cos (w) * l;
+		d.z = Mathf.Sin (w) * l;
+		}
+	
+	// Update is called once per frame
+	void Update () {
+		CalculaeVelocity ();
+		if (self._Velocity != Vector3.zero) {
+			gameObject.GetComponent<CharacterController> ().SimpleMove(self._Velocity);
+				}
+	}
+}
